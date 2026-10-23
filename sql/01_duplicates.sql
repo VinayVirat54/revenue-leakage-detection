@@ -9,6 +9,14 @@
 -- We flag the LATER of the two invoices (the suspected duplicate payment),
 -- not the original.
 --
+-- Same-day tie-breaking: when both invoices share the same invoice_date
+-- (gap = 0 days), there is no date-based way to tell which came first.
+-- We break the tie by flagging the invoice with the lexicographically
+-- GREATER invoice_id (i.e. a.invoice_id < b.invoice_id).  This is a known
+-- weakness: the invoice_id order is an artifact of the data pipeline, not
+-- a true temporal signal.  In a real system, use invoice receipt timestamp
+-- or the vendor's own invoice reference number to break ties.
+--
 -- WHY IT MATTERS TO AN AUDITOR
 -- ----------------------------
 -- Duplicate payments are the single most common cause of confirmed cash
@@ -21,13 +29,13 @@
 --
 -- KNOWN WEAKNESS
 -- --------------
--- This rule matches on (vendor_id, amount_inr) only.  It will produce
--- false positives for vendors who legitimately raise invoices for the same
--- fixed fee multiple times in a short period (e.g., monthly retainers billed
--- twice in one week during a billing-cycle overlap).  It will also miss
--- duplicates where the amount differs slightly due to rounding or currency
--- conversion.  A real audit would also join on invoice reference numbers,
--- but those are not available in this synthetic dataset.
+-- This rule matches on (vendor_id, amount_inr) only -- no invoice reference
+-- number.  It will produce false positives for vendors who legitimately
+-- raise invoices for the same fixed fee multiple times in a short period
+-- (e.g. retainer vendors with a recurring monthly charge, or a vendor who
+-- replaces a rejected invoice with an identical one).  It will also miss
+-- duplicates where the amount differs slightly due to rounding, currency
+-- conversion, or a partial credit note.
 -- =============================================================================
 
 SELECT
@@ -40,15 +48,19 @@ SELECT
         || ' days)' AS reason
 FROM invoices a
 JOIN invoices b
-    ON  a.vendor_id    = b.vendor_id
-    AND a.amount_inr   = b.amount_inr
-    AND a.invoice_id  != b.invoice_id
-    -- b is the LATER invoice
-    AND b.invoice_date >= a.invoice_date
-    AND julianday(b.invoice_date) - julianday(a.invoice_date) <= 7
--- Keep only the later invoice (b) by ensuring no earlier pair exists
--- that would make b the "original".  We achieve this by flagging b only
--- when a.invoice_date <= b.invoice_date, and then de-duplicating below
--- so each flagged invoice_id appears only once.
-GROUP BY b.invoice_id
+    ON  a.vendor_id  = b.vendor_id
+    AND a.amount_inr = b.amount_inr
+    AND (
+        -- Case 1: b is strictly later than a (positive gap, up to 7 days)
+        (    b.invoice_date >  a.invoice_date
+         AND julianday(b.invoice_date) - julianday(a.invoice_date) <= 7
+        )
+        OR
+        -- Case 2: same invoice_date -- break tie by invoice_id so each pair
+        -- is visited exactly once and only the 'higher' id is flagged.
+        -- KNOWN WEAKNESS: invoice_id order is pipeline order, not arrival order.
+        (    b.invoice_date = a.invoice_date
+         AND a.invoice_id   < b.invoice_id
+        )
+    )
 ORDER BY b.invoice_id
