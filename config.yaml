@@ -1,0 +1,33 @@
+# config.yaml — Central configuration for revenue leakage detection pipeline
+# Edit these values to tune the system for a real company's policies.
+
+# ── Invoice approval policy ──────────────────────────────────────────────────
+approval_limit: 50000          # INR: invoices above this need additional approval
+                               # Split-invoice rule targets chunks BELOW this limit
+
+# ── Rule weights (must sum to 1.0) ──────────────────────────────────────────
+# Higher weight = contributes more to the final risk score of an invoice.
+rule_weights:
+  duplicates:        0.30      # Strongest signal — likely real loss
+  split_invoices:    0.25      # High — classic approval-bypass fraud
+  weekend_holiday:   0.15      # Moderate — suspicious but could be legitimate
+  round_figure:      0.10      # Low — many legitimate invoices are round
+  outliers:          0.20      # High — sudden spikes are serious
+
+# ── Risk thresholds (invoice-level score 0–1) ────────────────────────────────
+risk_thresholds:
+  high:   0.50                 # Score >= 0.50 → HIGH risk (escalate to auditor)
+  medium: 0.25                 # Score >= 0.25 → MEDIUM risk (review recommended)
+                               # Score <  0.25 → LOW risk (pass)
+
+# ── Outlier detection ────────────────────────────────────────────────────────
+outlier_std_multiplier: 3.0    # Flag if amount > mean + (N * std) for that vendor
+                               # Used in SQL rule 05 and scoring
+
+# ── Duplicate detection window ───────────────────────────────────────────────
+duplicate_window_days: 7       # Flag if same vendor+amount appears within N days
+
+# ── Split invoice detection ──────────────────────────────────────────────────
+split_window_days: 3           # Invoices from same vendor within N days = a cluster
+split_lower_pct:  0.80         # Each chunk must be >= 80% of approval_limit
+split_upper_pct:  0.98         # Each chunk must be <= 98% of approval_limit
