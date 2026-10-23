@@ -24,7 +24,8 @@ The main dataset. Each row is one vendor invoice.
 - Dates span 3 Indian financial years: 2022-04-01 to 2025-03-31.
 - ~96% of rows are realistic normal invoices; ~4% are injected anomalies (the marking column is removed — use `ground_truth.csv` for labels).
 - About 2% of normal invoices have a payment on a weekend (deliberate noise so weekend rule is not trivially perfect).
-- About 5% of retainer-type vendors naturally issue round-figure amounts (deliberate noise for round-figure rule).
+- Normal payments on public holidays are rare (~0.04% based on the limited 40-date holiday list).
+- Retainer vendors (~10% of the 150 vendors) issue amounts rounded to a dynamic granularity (~1% of the draw value, minimum Rs 100), giving stable-ish amounts without exact-duplicate floods.
 
 ---
 
@@ -46,8 +47,8 @@ Labels for the injected anomalies. Used in Stage C to measure precision, recall,
 | `duplicate` | Exact copy of a real invoice — same vendor, same amount, paid 1–7 days later. Only the new (later) invoice is labelled. | Full amount of the duplicate invoice (= confirmed double payment) |
 | `split_invoice` | Cluster of 2–4 invoices from the same vendor + approver within 3 days, each 80–98% of Rs 50,000. Every invoice in the cluster gets its own row; all share the same `group_id`. | Individual invoice amount (auditor uses `group_id` to sum the full cluster) |
 | `weekend_holiday` | Payment date forced to a Saturday, Sunday, or Indian national holiday | 0 — exposure risk, not a confirmed loss |
-| `round_figure` | Amount forced to an exact multiple of Rs 10,000, for a non-retainer vendor | 0 — exposure risk, not a confirmed loss |
-| `outlier` | Amount set to 4x–8x the vendor's typical (median) amount | amount − vendor_median (potential overbilling above normal) |
+| `round_figure` | Amount forced to an exact multiple of Rs 10,000 (Rs 20,000 to Rs 90,000), for a non-retainer vendor | 0 — exposure risk, not a confirmed loss |
+| `outlier` | Amount set to 4x–8x the vendor's typical (**mean**) amount | amount − vendor_mean (potential overbilling above normal) |
 
 ---
 
