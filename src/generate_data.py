@@ -544,12 +544,12 @@ def main():
 
     print()
     print(f"Invoice date range          : "
-          f"{inv_dates.min().date()} → {inv_dates.max().date()}")
+          f"{inv_dates.min().date()} to {inv_dates.max().date()}")
     print(f"Total invoice amount        : Rs {invoices_df['amount_inr'].sum():>20,.2f}")
     print(f"Anomaly % of total rows     : "
           f"{len(gt_ids)/len(invoices_df)*100:.2f}%")
     print(f"Weekend payments (normal)   : "
-          f"{wknd_normal_cnt} ({wknd_pct:.2f}%)  ← target ~2%")
+          f"{wknd_normal_cnt} ({wknd_pct:.2f}%)  target ~2%")
     print()
     print("Files written:")
     print(f"  {INVOICES_PATH}")
