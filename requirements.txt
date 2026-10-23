@@ -2,6 +2,7 @@ pandas==2.2.2
 numpy==1.26.4
 PyYAML==6.0.1
 streamlit==1.35.0
+plotly==5.22.0
 pytest==8.2.2
 openpyxl==3.1.4
 Faker==25.2.0

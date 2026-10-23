@@ -26,6 +26,7 @@ SCORED_CSV   = ROOT / "outputs" / "scored_invoices.csv"
 VENDOR_CSV   = ROOT / "outputs" / "vendor_risk.csv"
 GT_CSV       = ROOT / "data" / "ground_truth.csv"
 REPORT_PATH  = ROOT / "outputs" / "evaluation_report.md"
+METRICS_CSV  = ROOT / "outputs" / "evaluation_metrics.csv"
 
 RULE_MAP = [
     ("flag_duplicate",       "duplicate",       "Rule 1: Duplicates"),
@@ -384,6 +385,25 @@ def main():
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     REPORT_PATH.write_text(report_text, encoding="utf-8")
     print(f"  Report written: {REPORT_PATH}")
+
+    # Save per-rule metrics as CSV for the Streamlit dashboard
+    metrics_rows = []
+    for m in metrics:
+        metrics_rows.append({
+            "rule":        m["rule"],
+            "gt_type":     m["gt_type"],
+            "flagged":     m["flagged"],
+            "gt_count":    m["gt_count"],
+            "tp":          m["tp"],
+            "fp":          m["fp"],
+            "fn":          m["fn"],
+            "precision":   m["precision"],
+            "recall":      m["recall"],
+            "f1":          m["f1"],
+        })
+    metrics_df = pd.DataFrame(metrics_rows)
+    metrics_df.to_csv(METRICS_CSV, index=False)
+    print(f"  Metrics CSV written: {METRICS_CSV}")
 
     # ── Print to stdout ───────────────────────────────────────────────────────
     print("\n" + "=" * 70)
