@@ -4,8 +4,9 @@ evaluate.py
 Compares the rule flags in scored_invoices.csv against data/ground_truth.csv
 to compute precision, recall, and F1 per rule and overall.
 
-Also compares total injected_extra_amount in ground_truth with the
-confirmed_leakage found by score.py.
+Also splits potential_leakage_inr into the amount attributable to true
+positives (invoices that ARE in ground_truth) vs false positives (invoices
+that are NOT in ground_truth and would be dropped after auditor review).
 
 Outputs
 -------
@@ -20,14 +21,12 @@ Usage
 import pandas as pd
 from pathlib import Path
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-ROOT          = Path(__file__).parent.parent
-SCORED_CSV    = ROOT / "outputs" / "scored_invoices.csv"
-VENDOR_CSV    = ROOT / "outputs" / "vendor_risk.csv"
-GT_CSV        = ROOT / "data" / "ground_truth.csv"
-REPORT_PATH   = ROOT / "outputs" / "evaluation_report.md"
+ROOT         = Path(__file__).parent.parent
+SCORED_CSV   = ROOT / "outputs" / "scored_invoices.csv"
+VENDOR_CSV   = ROOT / "outputs" / "vendor_risk.csv"
+GT_CSV       = ROOT / "data" / "ground_truth.csv"
+REPORT_PATH  = ROOT / "outputs" / "evaluation_report.md"
 
-# ── Map: rule flag column -> ground_truth anomaly_type ────────────────────────
 RULE_MAP = [
     ("flag_duplicate",       "duplicate",       "Rule 1: Duplicates"),
     ("flag_split_invoice",   "split_invoice",   "Rule 2: Split Invoices"),
@@ -38,26 +37,15 @@ RULE_MAP = [
 
 
 def safe_div(num: float, den: float) -> float:
-    """Return num/den, or 0.0 if denominator is zero."""
     return num / den if den > 0 else 0.0
 
 
-def compute_metrics(scored: pd.DataFrame,
-                    gt: pd.DataFrame) -> list[dict]:
-    """
-    Per-rule precision, recall, F1.
-
-    Definitions (invoice-level):
-      TP = invoice flagged by the rule AND in ground_truth for that rule's type
-      FP = invoice flagged by the rule AND NOT in ground_truth for that type
-      FN = invoice in ground_truth for that type AND NOT flagged by the rule
-
-    Self-check inside: TP + FN must equal ground_truth count for each type.
-    """
+def compute_metrics(scored: pd.DataFrame, gt: pd.DataFrame) -> list:
+    """Per-rule TP/FP/FN/precision/recall/F1. Self-checks TP+FN == GT count."""
     results = []
     for flag_col, gt_type, label in RULE_MAP:
-        flagged_ids  = set(scored.loc[scored[flag_col] == 1, "invoice_id"])
-        gt_ids       = set(gt.loc[gt["anomaly_type"] == gt_type, "invoice_id"])
+        flagged_ids = set(scored.loc[scored[flag_col] == 1, "invoice_id"])
+        gt_ids      = set(gt.loc[gt["anomaly_type"] == gt_type, "invoice_id"])
 
         tp = len(flagged_ids & gt_ids)
         fp = len(flagged_ids - gt_ids)
@@ -67,10 +55,8 @@ def compute_metrics(scored: pd.DataFrame,
         recall    = safe_div(tp, tp + fn)
         f1        = safe_div(2 * precision * recall, precision + recall)
 
-        # Self-check: TP + FN must equal GT count
         assert tp + fn == len(gt_ids), (
-            f"FAIL self-check for {gt_type}: TP({tp}) + FN({fn}) = {tp+fn}, "
-            f"expected {len(gt_ids)}"
+            f"FAIL: TP({tp})+FN({fn})={tp+fn} != GT({len(gt_ids)}) for {gt_type}"
         )
 
         results.append({
@@ -86,17 +72,11 @@ def compute_metrics(scored: pd.DataFrame,
             "recall":    round(recall,    4),
             "f1":        round(f1,        4),
         })
-
     return results
 
 
 def compute_overall(scored: pd.DataFrame, gt: pd.DataFrame) -> dict:
-    """
-    Overall metrics: any flag vs any anomaly.
-    TP = invoice flagged by at least one rule AND in ground_truth (any type)
-    FP = invoice flagged AND not in ground_truth
-    FN = invoice in ground_truth AND not flagged by any rule
-    """
+    """Any flag vs any anomaly."""
     any_flagged = set(scored.loc[scored["flag_count"] > 0, "invoice_id"])
     all_gt      = set(gt["invoice_id"])
 
@@ -109,39 +89,46 @@ def compute_overall(scored: pd.DataFrame, gt: pd.DataFrame) -> dict:
     f1        = safe_div(2 * precision * recall, precision + recall)
 
     return {
-        "flagged_any":  len(any_flagged),
-        "gt_total":     len(all_gt),
-        "tp":           tp,
-        "fp":           fp,
-        "fn":           fn,
-        "precision":    round(precision, 4),
-        "recall":       round(recall,    4),
-        "f1":           round(f1,        4),
+        "flagged_any": len(any_flagged),
+        "gt_total":    len(all_gt),
+        "tp": tp, "fp": fp, "fn": fn,
+        "precision": round(precision, 4),
+        "recall":    round(recall,    4),
+        "f1":        round(f1,        4),
     }
 
 
-def compare_leakage(scored: pd.DataFrame, gt: pd.DataFrame) -> dict:
+def compute_leakage_split(scored: pd.DataFrame, gt: pd.DataFrame) -> dict:
     """
-    Compare ground_truth injected_extra_amount with confirmed_leakage found.
-    Only duplicate and outlier contribute to injected_extra_amount > 0.
+    Split potential_leakage_inr into:
+      - from_tp: leakage from invoices that ARE in ground_truth
+      - from_fp: leakage from invoices that are NOT in ground_truth
+                 (would be dropped after auditor review)
+    Also compute exposure_at_risk and injected totals.
     """
-    injected_total = gt["injected_extra_amount"].sum()
-    found_total    = scored["confirmed_leakage_inr"].sum()
-    exposure_total = scored["exposure_at_risk_inr"].sum()
+    gt_ids = set(gt["invoice_id"])
 
-    # Per anomaly type
+    tp_mask = scored["invoice_id"].isin(gt_ids)
+    fp_mask = ~tp_mask
+
+    leakage_tp = scored.loc[tp_mask, "potential_leakage_inr"].sum()
+    leakage_fp = scored.loc[fp_mask, "potential_leakage_inr"].sum()
+    total_pot  = leakage_tp + leakage_fp
+    exposure   = scored["exposure_at_risk_inr"].sum()
+    injected   = gt["injected_extra_amount"].sum()
     injected_by_type = gt.groupby("anomaly_type")["injected_extra_amount"].sum()
 
     return {
-        "injected_total":   injected_total,
-        "found_total":      found_total,
-        "exposure_total":   exposure_total,
-        "injected_by_type": injected_by_type,
-        "recovery_rate":    safe_div(found_total, injected_total),
+        "total_potential":   total_pot,
+        "from_tp":           leakage_tp,
+        "from_fp":           leakage_fp,
+        "exposure_total":    exposure,
+        "injected_total":    injected,
+        "injected_by_type":  injected_by_type,
     }
 
 
-def build_report(metrics: list[dict],
+def build_report(metrics: list,
                  overall: dict,
                  leakage: dict,
                  scored: pd.DataFrame,
@@ -158,10 +145,10 @@ def build_report(metrics: list[dict],
     lines.append("")
     lines.append(
         "This report evaluates the five detection rules against the injected "
-        "anomalies in `data/ground_truth.csv`.  "
+        "anomalies in `data/ground_truth.csv`. "
         "Because the dataset is **synthetic** and the anomalies were designed "
         "to match the rules, recall figures are higher than would be expected "
-        "on real data.  See the Limitations section."
+        "on real data. See the Limitations section."
     )
     lines.append("")
 
@@ -169,31 +156,22 @@ def build_report(metrics: list[dict],
     lines.append("## 1. Per-Rule Detection Metrics")
     lines.append("")
     lines.append(
-        "| Rule | Flagged | GT count | TP | FP | FN | "
-        "Precision | Recall | F1 |"
+        "| Rule | Flagged | GT count | TP | FP | FN | Precision | Recall | F1 |"
     )
-    lines.append(
-        "|---|---|---|---|---|---|---|---|---|"
-    )
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for m in metrics:
         lines.append(
-            f"| {m['rule']} "
-            f"| {m['flagged']:,} "
-            f"| {m['gt_count']:,} "
-            f"| {m['tp']:,} "
-            f"| {m['fp']:,} "
-            f"| {m['fn']:,} "
-            f"| {m['precision']:.1%} "
-            f"| {m['recall']:.1%} "
-            f"| {m['f1']:.1%} |"
+            f"| {m['rule']} | {m['flagged']:,} | {m['gt_count']:,} "
+            f"| {m['tp']:,} | {m['fp']:,} | {m['fn']:,} "
+            f"| {m['precision']:.1%} | {m['recall']:.1%} | {m['f1']:.1%} |"
         )
     lines.append("")
 
     # ── Section 2: Overall metrics ────────────────────────────────────────────
     lines.append("## 2. Overall Metrics (Any Rule vs Any Anomaly)")
     lines.append("")
-    lines.append(f"| Metric | Value |")
-    lines.append(f"|---|---|")
+    lines.append("| Metric | Value |")
+    lines.append("|---|---|")
     lines.append(f"| Total invoices | {total:,} |")
     lines.append(f"| Flagged by any rule | {overall['flagged_any']:,} |")
     lines.append(f"| Ground-truth anomalies | {overall['gt_total']:,} |")
@@ -208,42 +186,57 @@ def build_report(metrics: list[dict],
     # ── Section 3: Risk level breakdown ──────────────────────────────────────
     lines.append("## 3. Risk Level Distribution")
     lines.append("")
-    lines.append(f"| Risk Level | Invoice Count | % of Total |")
-    lines.append(f"|---|---|---|")
+    lines.append("| Risk Level | Invoice Count | % of Total |")
+    lines.append("|---|---|---|")
     lines.append(f"| HIGH (score >= 40) | {high_ct:,} | {high_ct/total:.1%} |")
     lines.append(f"| MEDIUM (score 20-39) | {med_ct:,} | {med_ct/total:.1%} |")
     lines.append(f"| LOW (score < 20) | {low_ct:,} | {low_ct/total:.1%} |")
     lines.append("")
 
-    # ── Section 4: Leakage comparison ────────────────────────────────────────
-    lines.append("## 4. Leakage Comparison")
+    # ── Section 4: Potential leakage split ───────────────────────────────────
+    lines.append("## 4. Potential Leakage (Flagged): True Positive vs False Positive Split")
     lines.append("")
     lines.append(
-        "Injected extra amount = the true financial exposure embedded in the "
-        "synthetic data.  Confirmed leakage found = what score.py computed "
-        "from flagged invoices."
+        "The column `potential_leakage_inr` in `scored_invoices.csv` is the "
+        "system's best estimate of financial risk before human review. "
+        "This table splits that amount into what comes from invoices that ARE "
+        "confirmed anomalies (true positives) versus invoices that are NOT "
+        "anomalies (false positives). False-positive amounts would be removed "
+        "after an auditor reviews and clears those invoices."
     )
     lines.append("")
-    lines.append(f"| Metric | Amount (Rs) |")
-    lines.append(f"|---|---|")
+    lines.append("| Source | Amount (Rs) | Notes |")
+    lines.append("|---|---|---|")
     lines.append(
-        f"| Total injected extra amount (GT) "
-        f"| {leakage['injected_total']:,.2f} |"
+        f"| From true positives (in GT) "
+        f"| {leakage['from_tp']:,.2f} "
+        f"| Genuine leakage found by the rules |"
     )
     lines.append(
-        f"| Confirmed leakage found (scored) "
-        f"| {leakage['found_total']:,.2f} |"
+        f"| From false positives (not in GT) "
+        f"| {leakage['from_fp']:,.2f} "
+        f"| Would be dropped after audit review |"
     )
     lines.append(
-        f"| Exposure at risk (scored) "
-        f"| {leakage['exposure_total']:,.2f} |"
+        f"| **Total potential leakage (flagged)** "
+        f"| **{leakage['total_potential']:,.2f}** "
+        f"| Pre-review figure shown in dashboard |"
     )
     lines.append(
-        f"| Recovery rate (found / injected) "
-        f"| {leakage['recovery_rate']:.1%} |"
+        f"| Exposure at risk (split/round/weekend) "
+        f"| {leakage['exposure_total']:,.2f} "
+        f"| Separate category; auditor must investigate |"
     )
     lines.append("")
-    lines.append("**Injected extra amount by anomaly type:**")
+    lines.append(
+        f"For reference, the total injected extra amount in ground_truth is "
+        f"Rs {leakage['injected_total']:,.2f}. "
+        f"The true-positive leakage found (Rs {leakage['from_tp']:,.2f}) is "
+        f"{safe_div(leakage['from_tp'], leakage['injected_total']):.1%} of this, "
+        f"meaning the rules recover most of the injected exposure."
+    )
+    lines.append("")
+    lines.append("**Injected extra amount by anomaly type (from ground_truth):**")
     lines.append("")
     lines.append("| Anomaly type | Injected extra (Rs) |")
     lines.append("|---|---|")
@@ -252,21 +245,9 @@ def build_report(metrics: list[dict],
     lines.append("")
     lines.append(
         "Note: `weekend_holiday` and `round_figure` have injected_extra_amount = 0 "
-        "by design (they are exposure, not confirmed leakage).  "
-        "`split_invoice` entries also have injected_extra_amount = individual "
-        "invoice amount; the full cluster sum is tracked via group_id."
-    )
-    lines.append("")
-    lines.append(
-        "**Why recovery rate exceeds 100%:** "
-        "Confirmed leakage includes FP outlier invoices (236 normal invoices "
-        "that genuinely exceed their vendor mean+3*std) and FP duplicate invoices "
-        "(17 retainer-vendor coincidences). These false positives add to the "
-        "confirmed leakage figure but are not in ground_truth, so the 'found' "
-        "amount exceeds the 'injected' amount. "
-        "In a real audit, an auditor reviewing each flagged invoice would "
-        "exclude these FPs, reducing the confirmed amount to below the injected total. "
-        "This is a known consequence of imperfect precision in Rules 1 and 5."
+        "by design (they are exposure at risk, not confirmed leakage). "
+        "`split_invoice` entries record each invoice's own amount; "
+        "the cluster total is tracked via group_id in ground_truth."
     )
     lines.append("")
 
@@ -274,9 +255,8 @@ def build_report(metrics: list[dict],
     lines.append("## 5. Honest Assessment: Limitations and Imperfect Rules")
     lines.append("")
     lines.append(
-        "The following analysis uses real numbers from this run.  "
-        "These are not post-hoc rationalisations -- they are genuine "
-        "limitations that would be more severe on real data."
+        "The following analysis uses real numbers from this run. "
+        "These are genuine limitations that would be more severe on real data."
     )
     lines.append("")
 
@@ -284,98 +264,88 @@ def build_report(metrics: list[dict],
         lines.append(f"### {m['rule']}")
         lines.append("")
         lines.append(
-            f"- Flagged: {m['flagged']:,} | TP: {m['tp']:,} | FP: {m['fp']:,} | FN: {m['fn']:,}"
+            f"- Flagged: {m['flagged']:,} | TP: {m['tp']:,} | "
+            f"FP: {m['fp']:,} | FN: {m['fn']:,}"
         )
         lines.append(
-            f"- Precision: {m['precision']:.1%} | Recall: {m['recall']:.1%} | F1: {m['f1']:.1%}"
+            f"- Precision: {m['precision']:.1%} | "
+            f"Recall: {m['recall']:.1%} | F1: {m['f1']:.1%}"
         )
         lines.append("")
 
         if m["gt_type"] == "duplicate":
             lines.append(
                 f"**Precision {m['precision']:.1%}**: "
-                f"{m['fp']} false positives remain after the symmetry fix.  "
+                f"{m['fp']} false positives remain after the symmetry fix. "
                 "All are from retainer vendors (VND0037, VND0050, VND0095, VND0123, etc.) "
                 "whose dynamic-granularity rounding occasionally produces the same "
-                "amount twice within 7 days for the same vendor.  "
-                "In real data, an invoice reference number would eliminate most of these.  "
-                f"**Recall {m['recall']:.1%}**: all {m['tp']} injected duplicates found; "
-                "the SQL correctly uses a strict positive date gap so no symmetry FPs remain."
+                "amount twice within 7 days for the same vendor. "
+                "In real data, an invoice reference number would eliminate most of these. "
+                f"**Recall {m['recall']:.1%}**: all {m['tp']} injected duplicates found."
             )
         elif m["gt_type"] == "split_invoice":
             lines.append(
                 f"**Precision {m['precision']:.1%}**: "
-                f"{m['fp']} FPs come from normal invoices that happen to fall near "
-                "the approval-limit band (80-98% of Rs 50,000) for the same vendor "
-                "and approver within 3 days.  On real data this band would need "
-                "calibration per department.  "
-                f"**Recall {m['recall']:.1%}**: {m['fn']} injected split clusters not caught -- "
-                "the pairwise SQL join only detects 2-invoice clusters; clusters of 3-4 "
-                "are caught only if at least one qualifying pair exists within the cluster."
+                f"{m['fp']} FPs from normal invoices that fall near the "
+                "approval-limit band (80-98% of Rs 50,000) for the same vendor "
+                "and approver within 3 days. "
+                f"**Recall {m['recall']:.1%}**: {m['fn']} injected clusters missed -- "
+                "the pairwise SQL join only detects clusters where at least one "
+                "qualifying pair exists within the 3-day window."
             )
         elif m["gt_type"] == "weekend_holiday":
             lines.append(
                 f"**Precision {m['precision']:.1%}**: "
                 f"{m['fp']} FPs are normal invoices whose payment_date naturally "
-                "falls on a weekend (the ~2% weekend-noise we deliberately introduced) "
-                "or on a public holiday date.  "
-                "With 20,951 invoices and ~2% weekend noise, approximately 400 normal "
-                "invoices are expected to fall on weekends.  "
-                f"**Recall {m['recall']:.1%}**: all {m['tp']} injected weekend payments found "
-                "because they were placed directly on Saturday/Sunday."
+                "falls on a weekend (the ~2% weekend noise in the data) or a holiday. "
+                "With ~18,800 non-anomaly invoices and ~2% weekend noise, "
+                "approximately 376 normal invoices are expected to fall on weekends. "
+                f"**Recall {m['recall']:.1%}**: all {m['tp']} injected weekend "
+                "payments found."
             )
         elif m["gt_type"] == "round_figure":
             lines.append(
                 f"**Precision {m['precision']:.1%}**: "
-                f"{m['fp']} FPs are normal invoices with a round amount from non-retainer "
-                "vendors whose round-rate happens to be below 15%.  "
-                "Retainer vendors with round-to-granularity amounts occasionally hit "
-                "exact 10,000 multiples.  "
+                f"{m['fp']} FPs are normal invoices with a round amount from "
+                "non-retainer vendors whose round-rate is below 15%. "
                 f"**Recall {m['recall']:.1%}**: all {m['tp']} injected round-figure "
-                "invoices found; the Rs 20,000 floor now matches the injection multiplier "
-                "(2x to 9x), so no injected anomaly is below the threshold."
+                "invoices found; the Rs 20,000 floor matches the 2x-9x injection range."
             )
         elif m["gt_type"] == "outlier":
             lines.append(
                 f"**Precision {m['precision']:.1%}**: "
-                f"{m['fp']} FPs are normal invoices that naturally exceed their "
-                "vendor's mean + 3*std (high-variance vendors where the lognormal "
-                "distribution has a heavy upper tail).  "
-                f"**Recall {m['recall']:.1%}**: {m['fn']} injected outliers not caught -- "
-                "for high-variance vendors, even a 4x-mean multiplier may produce a "
-                "z-score just below 3.0 (e.g. vendors with std > mean).  "
-                "A more robust rule would use median + 3*MAD (median absolute deviation) "
-                "instead of mean + 3*std."
+                f"{m['fp']} FPs are normal invoices that naturally exceed "
+                "their vendor mean + 3*std (lognormal heavy upper tail). "
+                f"**Recall {m['recall']:.1%}**: {m['fn']} injected outliers missed -- "
+                "for high-variance vendors, even 4x-mean can fall below mean+3*std. "
+                "A more robust rule would use median + 3*MAD instead of mean + 3*std."
             )
         lines.append("")
 
     lines.append("### Why recall is generally high")
     lines.append("")
     lines.append(
-        "Recall figures are high partly because the data is synthetic and the anomalies "
-        "were injected to match the rule conditions exactly (e.g. duplicate amounts are "
-        "exactly equal, split amounts are exactly in the 80-98% band).  "
-        "On real data, anomalies are messier: duplicates may have small amount differences, "
-        "split invoices may span longer periods, and outliers may be harder to distinguish "
-        "from seasonal spikes.  Reported recall would likely be 20-40 percentage points "
-        "lower on real production data."
+        "Recall figures are high partly because the data is synthetic and anomalies "
+        "were injected to match rule conditions exactly (equal amounts for duplicates, "
+        "exact 80-98% band for splits, exact multiples for round figures). "
+        "On real data, anomalies are messier and recall would likely be "
+        "20-40 percentage points lower."
     )
     lines.append("")
     lines.append("### Why precision is low for Rules 3 and 5")
     lines.append("")
     lines.append(
-        "Rule 3 (Weekend/Holiday) flags ~400 normal invoices that naturally fall on "
-        "weekends due to the 15-45 day payment lag.  This is deliberate noise in the "
-        "data to make the rule realistic.  On real data with better timestamp resolution "
-        "(hour of day, automated vs manual payments), precision would improve.  "
-        "Rule 5 (Outliers) flags normal invoices for high-variance vendors because their "
-        "lognormal distribution has a heavy upper tail.  Using a per-vendor percentile "
-        "threshold (e.g. 99th percentile) instead of mean+3*std would reduce these FPs."
+        "Rule 3 (Weekend/Holiday): ~400 normal invoices naturally fall on weekends "
+        "due to the 15-45 day payment lag (deliberate noise). "
+        "Better timestamp resolution (hour of day, automated vs manual) would improve precision. "
+        "Rule 5 (Outliers): normal invoices for high-variance vendors exceed mean+3*std "
+        "due to the lognormal distribution's heavy upper tail. "
+        "A per-vendor percentile threshold (e.g. 99th percentile) would reduce FPs."
     )
     lines.append("")
     lines.append("---")
     lines.append(
-        "*Generated by src/evaluate.py.  "
+        "*Generated by src/evaluate.py. "
         "Do not tune data or rules to improve these scores -- "
         "the purpose is honest measurement, not optimisation.*"
     )
@@ -383,20 +353,16 @@ def build_report(metrics: list[dict],
     return "\n".join(lines)
 
 
-# ── Self-check: TP + FN == GT count (already inside compute_metrics via assert)
-# Additional check run here: no overlap
 def check_no_leakage_overlap(scored: pd.DataFrame) -> None:
     overlap = scored[
-        (scored["confirmed_leakage_inr"] > 0) &
+        (scored["potential_leakage_inr"] > 0) &
         (scored["exposure_at_risk_inr"]  > 0)
     ]
     assert len(overlap) == 0, \
-        f"FAIL: {len(overlap)} invoices in both confirmed and exposure"
+        f"FAIL: {len(overlap)} invoices in both potential_leakage and exposure"
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    # Load inputs
     scored = pd.read_csv(SCORED_CSV)
     gt     = pd.read_csv(GT_CSV)
 
@@ -406,16 +372,15 @@ def main():
     print("Computing overall metrics...")
     overall = compute_overall(scored, gt)
 
-    print("Comparing leakage figures...")
-    leakage = compare_leakage(scored, gt)
+    print("Computing leakage split...")
+    leakage = compute_leakage_split(scored, gt)
 
     print("Running overlap self-check...")
     check_no_leakage_overlap(scored)
-    print("  [CHECK] No confirmed/exposure overlap: PASS")
+    print("  [CHECK] No potential_leakage / exposure overlap: PASS")
 
     print("Building evaluation report...")
     report_text = build_report(metrics, overall, leakage, scored, gt)
-
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     REPORT_PATH.write_text(report_text, encoding="utf-8")
     print(f"  Report written: {REPORT_PATH}")
@@ -424,8 +389,11 @@ def main():
     print("\n" + "=" * 70)
     print("EVALUATE.PY -- PER-RULE METRICS")
     print("=" * 70)
-    hdr = f"{'Rule':<30} {'Flag':>6} {'GT':>6} {'TP':>5} {'FP':>5} {'FN':>5}  {'Prec':>6} {'Rec':>6} {'F1':>6}"
-    print(hdr)
+    print(
+        f"{'Rule':<30} {'Flag':>6} {'GT':>6} "
+        f"{'TP':>5} {'FP':>5} {'FN':>5}  "
+        f"{'Prec':>6} {'Rec':>6} {'F1':>6}"
+    )
     print("-" * 70)
     for m in metrics:
         print(
@@ -440,12 +408,13 @@ def main():
         f"{overall['precision']:>5.1%} {overall['recall']:>5.1%} {overall['f1']:>5.1%}"
     )
     print()
-    print(f"Confirmed leakage (found)  : Rs {leakage['found_total']:>15,.2f}")
-    print(f"Injected extra (ground truth): Rs {leakage['injected_total']:>13,.2f}")
-    print(f"Recovery rate              : {leakage['recovery_rate']:.1%}")
-    print(f"Exposure at risk           : Rs {leakage['exposure_total']:>15,.2f}")
+    print("Potential leakage (flagged) split:")
+    print(f"  From true positives  (in GT)    : Rs {leakage['from_tp']:>15,.2f}")
+    print(f"  From false positives (not in GT): Rs {leakage['from_fp']:>15,.2f}")
+    print(f"  Total potential leakage (flagged): Rs {leakage['total_potential']:>14,.2f}")
+    print(f"  Exposure at risk                : Rs {leakage['exposure_total']:>15,.2f}")
+    print(f"  Injected extra (ground truth)   : Rs {leakage['injected_total']:>15,.2f}")
     print()
-
     high_ct = (scored["risk_level"] == "HIGH").sum()
     med_ct  = (scored["risk_level"] == "MEDIUM").sum()
     low_ct  = (scored["risk_level"] == "LOW").sum()

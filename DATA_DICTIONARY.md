@@ -81,7 +81,7 @@ Reference table of Indian national holidays used by Rule 3.
 | `flag_count` | int | Total number of rules that flagged this invoice |
 | `risk_score` | float (0–1) | Weighted risk score (from config.yaml weights) |
 | `risk_tier` | string | `HIGH` / `MEDIUM` / `LOW` (from config.yaml thresholds) |
-| `confirmed_leakage_inr` | float | Rs amount considered a near-certain loss (duplicates + outlier excess) |
+| `potential_leakage_inr` | float | Rs amount considered potentially lost, pre-audit-review. For duplicate-flagged invoices: full invoice amount. For outlier-flagged invoices (not also duplicate): excess above the vendor mean. Zero for all other invoices. Includes both true-positive and false-positive flags; auditor review would reduce this. |
 | `exposure_at_risk_inr` | float | Rs amount suspicious but not confirmed lost |
 
 ---
@@ -96,7 +96,7 @@ Reference table of Indian national holidays used by Rule 3.
 | `flagged_invoices` | int | Count of invoices flagged by at least one rule |
 | `flag_rate_pct` | float | flagged_invoices / total_invoices × 100 |
 | `total_spend_inr` | float | Sum of all invoice amounts |
-| `confirmed_leakage_inr` | float | Sum of confirmed leakage amounts |
+| `potential_leakage_inr` | float | Sum of potential_leakage_inr for all invoices from this vendor |
 | `exposure_at_risk_inr` | float | Sum of exposure-at-risk amounts |
 | `max_risk_score` | float | Highest single-invoice risk score for this vendor |
 | `avg_risk_score` | float | Mean risk score across all invoices |

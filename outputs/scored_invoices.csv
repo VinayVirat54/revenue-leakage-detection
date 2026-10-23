@@ -1,4 +1,4 @@
-invoice_id,vendor_id,vendor_name,invoice_date,payment_date,amount_inr,approver_id,department,payment_mode,flag_duplicate,flag_split_invoice,flag_weekend_holiday,flag_round_figure,flag_outlier,flag_count,risk_score,risk_level,confirmed_leakage_inr,exposure_at_risk_inr
+invoice_id,vendor_id,vendor_name,invoice_date,payment_date,amount_inr,approver_id,department,payment_mode,flag_duplicate,flag_split_invoice,flag_weekend_holiday,flag_round_figure,flag_outlier,flag_count,risk_score,risk_level,potential_leakage_inr,exposure_at_risk_inr
 INV000001,VND0050,Vendor_0050_Ltd,2022-04-08,2022-05-10,9300.0,APR005,Operations,UPI,0,0,0,0,0,0,0,LOW,0.0,0.0
 INV000002,VND0087,Vendor_0087_Ltd,2023-07-18,2023-08-09,198232.95,APR009,Legal,UPI,0,0,0,0,0,0,0,LOW,0.0,0.0
 INV000003,VND0112,Vendor_0112_Ltd,2024-12-22,2025-02-03,90000.0,APR005,HR,NEFT,0,0,0,1,0,1,10,LOW,0.0,90000.0

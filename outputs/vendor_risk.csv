@@ -1,4 +1,4 @@
-vendor_id,vendor_name,invoice_count,flagged_count,total_spend_inr,flagged_amount_inr,confirmed_leakage_inr,exposure_at_risk_inr,avg_risk_score,max_risk_score,flag_rate_pct,risk_tier
+vendor_id,vendor_name,invoice_count,flagged_count,total_spend_inr,flagged_amount_inr,potential_leakage_inr,exposure_at_risk_inr,avg_risk_score,max_risk_score,flag_rate_pct,risk_tier
 VND0032,Vendor_0032_Ltd,146,19,76972244.04,12834382.85,8839842.558082193,2940125.99,3.29,50,13.01,HIGH
 VND0012,Vendor_0012_Ltd,149,15,68104166.3,12240352.879999999,7338308.535167785,3530819.52,1.21,20,10.07,MEDIUM
 VND0132,Vendor_0132_Ltd,154,10,65586689.07,9531140.85,6993252.955909091,1260225.12,1.04,40,6.49,HIGH
